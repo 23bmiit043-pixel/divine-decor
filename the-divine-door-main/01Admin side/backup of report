@@ -1,0 +1,153 @@
+<?php
+session_start();
+ob_start();
+
+include('connect.php');
+define('TCPDF_DIR', __DIR__ . '/TCPDF-main/');
+
+// Function to fetch customer report data
+function getCustomerReportData($conn, $from_date = null, $to_date = null) {
+    $sql = "SELECT c.Cid, c.C_name, c.Email, c.Address, c.Contact_no, c.Gender,
+            COUNT(o.order_id) as total_orders,
+            SUM(o.order_amount) as total_spent
+            FROM customer c
+            LEFT JOIN `order` o ON c.Cid = o.cid";
+    
+    if ($from_date && $to_date) {
+        $sql .= " WHERE o.order_date BETWEEN ? AND ?";
+        $sql .= " GROUP BY c.Cid";
+        $stmt = $conn->prepare($sql);
+        $stmt->bind_param("ss", $from_date, $to_date);
+        $stmt->execute();
+        return $stmt->get_result();
+    }
+    
+    $sql .= " GROUP BY c.Cid";
+    return $conn->query($sql);
+}
+
+// Function to generate PDF report
+function generatePDFReport($result, $from_date = null, $to_date = null) {
+    // Initialize TCPDF
+    $pdf = new TCPDF(PDF_PAGE_ORIENTATION, PDF_UNIT, PDF_PAGE_FORMAT, true, 'UTF-8', false);
+    
+    // Set document properties
+    $pdf->SetCreator(PDF_CREATOR);
+    $pdf->SetAuthor('The Divine Decor');
+    $pdf->SetTitle('Customer Report');
+    $pdf->SetHeaderData(false, 0, 'The Divine Decor', 'Customer Report - ' . date('d-m-Y'));
+    
+    // Set margins and breaks
+    $pdf->SetMargins(15, 25, 15);
+    $pdf->SetHeaderMargin(5);
+    $pdf->SetFooterMargin(10);
+    $pdf->SetAutoPageBreak(TRUE, 25);
+    
+    $pdf->AddPage();
+    $pdf->SetFont('helvetica', 'B', 14);
+    
+    // Add report header
+    $pdf->Cell(0, 10, 'Customer Database Report', 0, 1, 'C');
+    $pdf->Cell(0, 10, 'Generated on: ' . date('F d, Y'), 0, 1, 'C');
+    
+    if ($from_date && $to_date) {
+        $pdf->Cell(0, 10, 'Date Range: ' . date('F d, Y', strtotime($from_date)) . 
+                         ' to ' . date('F d, Y', strtotime($to_date)), 0, 1, 'C');
+    }
+    
+    // Generate table content
+    $pdf->SetFont('helvetica', '', 10);
+    $pdf->Ln(10);
+    
+    $html = '<table border="1" cellpadding="5" style="border-collapse: collapse; width: 100%;">';
+    $html .= '<thead><tr style="background-color: #f0f0f0;">';
+    
+    while ($fieldinfo = $result->fetch_field()) {
+        $html .= '<th style="font-weight: bold;">' . $fieldinfo->name . '</th>';
+    }
+    $html .= '</tr></thead><tbody>';
+    
+    $rowCount = 0;
+    while ($row = $result->fetch_assoc()) {
+        $bgColor = $rowCount % 2 ? '#ffffff' : '#f9f9f9';
+        $html .= '<tr style="background-color: ' . $bgColor . '">';
+        foreach ($row as $value) {
+            $html .= '<td>' . htmlspecialchars($value) . '</td>';
+        }
+        $html .= '</tr>';
+        $rowCount++;
+    }
+    $html .= '</tbody></table>';
+    
+    $pdf->writeHTML($html, true, false, true, false, '');
+    return $pdf;
+}
+
+// Main execution logic
+try {
+    // Check TCPDF installation
+    if (!file_exists(TCPDF_DIR . 'tcpdf.php')) {
+        throw new Exception("TCPDF is not installed. Please install it in: " . TCPDF_DIR);
+    }
+    require_once(TCPDF_DIR . 'tcpdf.php');
+
+    if (isset($_POST['report'])) {
+        $from_date = $_POST['from_date'] ?? '';
+        $to_date = $_POST['to_date'] ?? '';
+        
+        // Validate dates if provided
+        if (($from_date && !$to_date) || (!$from_date && $to_date)) {
+            throw new Exception("Please provide both From and To dates");
+        }
+        
+        $result = getCustomerReportData($conn, $from_date, $to_date);
+        if (!$result) {
+            throw new Exception('Database query error: ' . $conn->error);
+        }
+        
+        $pdf = generatePDFReport($result, $from_date, $to_date);
+        ob_end_clean();
+        $pdf->Output('customer_report_' . date('Y-m-d') . '.pdf', 'D');
+        exit();
+    }
+} catch (Exception $e) {
+    $error = $e->getMessage();
+}
+?>
+
+<!-- Report Generation Form -->
+<div class="container mt-4">
+    <?php if (isset($error)): ?>
+        <div class="alert alert-danger"><?php echo $error; ?></div>
+    <?php endif; ?>
+    
+    <form action="report.php" method="POST" class="mb-4">
+        <div class="row">
+            <div class="col-md-4">
+                <div class="form-group">
+                    <label for="from_date">From Date:</label>
+                    <input type="date" name="from_date" id="from_date" class="form-control">
+                </div>
+            </div>
+            <div class="col-md-4">
+                <div class="form-group">
+                    <label for="to_date">To Date:</label>
+                    <input type="date" name="to_date" id="to_date" class="form-control">
+                </div>
+            </div>
+            <div class="col-md-4">
+                <div class="form-group">
+                    <label>&nbsp;</label>
+                    <button type="submit" name="report" class="btn btn-info btn-block">
+                        <i class="fas fa-file-pdf"></i> Generate Customer Report
+                    </button>
+                </div>
+            </div>
+        </div>
+    </form>
+</div>
+
+<?php
+include('script.php');
+include('includes/footer.php');
+?>
